@@ -1,6 +1,7 @@
 import pandas as pd
 import os
 import glob
+import itertools
 
 def merge_orders():
     # 1. 扫描当前目录下所有的 .xlsx 文件
@@ -25,16 +26,15 @@ def merge_orders():
             
             # 检查必要列是否存在
             if '客户' in columns and '地址代码' in columns:
-                # 使用文件名（不含扩展名）作为月份/列名
+                # 使用文件名（包含扩展名前部分）作为月份
                 month_name = os.path.splitext(filename)[0]
                 valid_files[month_name] = file_path
-                print(f"Found valid file: {filename} -> Column: {month_name}")
             else:
-                print(f"Skipping {filename}: Missing '客户' or '地址代码' columns")
+                pass
                 
         except Exception as e:
             print(f"Error reading {filename}: {e}")
-            
+
     # 过滤只要数字命名的文件
     numeric_files = {}
     for month_name, file_path in valid_files.items():
@@ -47,58 +47,91 @@ def merge_orders():
         print("No valid numeric Excel files found.")
         return
 
-    # 按数字大小排序 (9 < 10 < 11 < 12)
+    # 按数字大小排序
     sorted_months = sorted(numeric_files.keys())
     
-    # 2. 建立所有 valid files 的 (客户, 地址代码) 并集
-    all_pairs_list = []
+    # 2. 收集所有唯一的 客户 和 地址代码
+    all_customers = set()
+    all_address_codes = set()
     
-    # 用来存储读取后的完整 dataframe，避免重复读取
     loaded_dfs = {}
 
     for month_num in sorted_months:
         file_path = numeric_files[month_num]
-        print(f"Processing ({month_num}): {file_path}...")
+        print(f"Loading ({month_num}): {file_path}...")
         df = pd.read_excel(file_path)
-        # 用原始字符串名字作为key，或者直接用数字，为了列名一致，最后 column 用 str(month_num)
         loaded_dfs[month_num] = df
-        all_pairs_list.append(df[['客户', '地址代码']])
         
-    all_pairs = pd.concat(all_pairs_list)
+        # 收集唯一值
+        all_customers.update(df['客户'].dropna().unique())
+        all_address_codes.update(df['地址代码'].dropna().unique())
+        
+    # 3. 构建笛卡尔积：每个客户拥有所有地址代码
+    # list(itertools.product(all_customers, all_address_codes))
+    print("Generating master list (Cartesian product)...")
+    master_data = list(itertools.product(sorted(list(all_customers)), sorted(list(all_address_codes))))
+    master_df = pd.DataFrame(master_data, columns=['客户', '地址代码'])
     
-    # 去重，生成并集主表
-    master_df = all_pairs.drop_duplicates(subset=['客户', '地址代码']).reset_index(drop=True)
+    # 4. 填充数据
+    month_columns = []
     
-    # 3. 填充数据
     for month_num in sorted_months:
         df_month = loaded_dfs[month_num]
-        month_col_name = str(month_num) # 列名转回字符串
-        # 检查是否有名为 '数量' 的列，或者我们需要动态识别数据列？
-        # 根据之前的逻辑，默认只有一列数值列，通常是第三列，但最好按名字 '数量' 匹配
-        # 如果没有 '数量' 列，可能需要进一步处理，这里假设都有
+        month_col_name = str(month_num) # 列名
+        month_columns.append(month_col_name)
+        
         target_col = '数量'
         if target_col not in df_month.columns:
-            # 如果没有叫 '数量' 的，尝试取第三列（索引2）作为数值列
             if len(df_month.columns) >= 3:
                 target_col = df_month.columns[2]
             else:
                 print(f"Warning: Could not find data column for {month_num}")
                 continue
                 
-        # 重命名为数字字符串
         temp = df_month[['客户', '地址代码', target_col]].rename(columns={target_col: month_col_name})
-        master_df = pd.merge(master_df, temp, on=['客户', '地址代码'], how='left')
         
-    # 4. 删除 '地址代码' 为空的行
-    master_df_clean = master_df.dropna(subset=['地址代码'])
+        # 合并
+        master_df = pd.merge(master_df, temp, on=['客户', '地址代码'], how='left')
+
+    # 5. 添加合计行
+    print("Calculating summaries...")
     
-    # 5. 排序
-    master_df_sorted = master_df_clean.sort_values(by=['客户', '地址代码'])
+    # 为了方便排序，我们给原始数据打标 is_summary=0
+    master_df['is_summary'] = 0
     
-    # 6. 导出
+    # 计算按客户分组的合计
+    summary_dfs = []
+    grouped = master_df.groupby('客户')
+    
+    for customer, group in grouped:
+        # 计算该客户所有月份列的和
+        # min_count=0 确保全是 NaN 时和为 0 (或者保留 NaN，看需求，通常 sum 会把 NaN 视为 0)
+        sums = group[month_columns].sum(numeric_only=True)
+        
+        # 构建一行 summary
+        row = {'客户': customer, '地址代码': 'Total', 'is_summary': 1}
+        for col in month_columns:
+            row[col] = sums[col]
+            
+        summary_dfs.append(row)
+        
+    summary_df = pd.DataFrame(summary_dfs)
+    
+    # 合并原始数据和合计
+    final_df = pd.concat([master_df, summary_df], ignore_index=True)
+    
+    # 6. 排序：先按客户，再按 is_summary (0在1前)，最后按地址代码
+    # 这样 'Total' 行会出现在每个客户的最后
+    final_df = final_df.sort_values(by=['客户', 'is_summary', '地址代码'])
+    
+    # 移除辅助列 is_summary
+    final_df = final_df.drop(columns=['is_summary'])
+    
+    # 7. 导出
     output_filename = 'combined_orders_final.xlsx'
     try:
-        master_df_sorted.set_index(['客户', '地址代码']).to_excel(output_filename)
+        # 设置索引可以合并单元格
+        final_df.set_index(['客户', '地址代码']).to_excel(output_filename)
         print(f"Successfully exported to {output_filename}")
     except PermissionError:
         print(f"Error: Could not write to {output_filename}. Please close the file if it is open.")
