@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2025 新春年会抽奖盛典</title>
+    <!-- Premium Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Noto+Serif+SC:wght@400;700;900&family=Outfit:wght@700&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Background Elements -->
+        <!-- Removed background elements as requested -->
+
+        <!-- Main Content -->
+        <main class="main-stage">
+            <!-- <header class="header">
+                <h1 class="main-title"><span class="brand-font">Conwest</span> 幸运之夜</h1>
+                <div class="subtitle">好运连连 &middot; 惊喜不断</div>
+            </header> -->
+
+            <div class="lottery-display">
+                <div class="current-prize-label" id="currentPrizeLabel">等待开奖</div>
+                <!-- Countdown removed -->
+                <div class="rolling-window">
+                    <div class="winner-name" id="displayArea">准备就绪</div>
+                </div>
+            </div>
+
+            <div class="controls">
+                <button id="startBtn" class="btn btn-primary">开始抽奖</button>
+                <button id="nextPrizeBtn" class="btn btn-secondary">下一奖项</button>
+            </div>
+            <!-- Old controls removed -->
+        </main>
+
+        <!-- Sidebar / History -->
+        <!-- Sidebar / History (Hidden by default) -->
+        <aside class="history-panel hidden" id="historyPanel">
+            <button class="close-sidebar" id="closeSidebarBtn">&times;</button>
+            <h2 id="sidebarTitleReset" style="cursor: pointer; user-select: none;">🎉 中奖名单</h2>
+            <div id="winnersList" class="winners-list">
+                <!-- Winners will be added here -->
+            </div>
+        </aside>
+    </div>
+
+    <!-- Toggle Button -->
+    <button id="toggleSidebarBtn" class="toggle-sidebar-btn">幸运名单 (0)</button>
+
+    <!-- Settings Modal Removed -->
+
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.2/dist/confetti.browser.min.js"></script>
+    <script src="script.js"></script>
+</body>
+
+</html>
