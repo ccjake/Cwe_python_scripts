@@ -57,11 +57,20 @@ def process_encoded_data(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[Tuple[int
     根据原始 Excel 脚本的逻辑处理 Pandas DataFrame 中的字符串数据。
     """
     df_processed = df.copy()
+    df_processed.reset_index(drop=True, inplace=True) # 必需重置索引，否则 enumerate 的 i 与 loc[i] 不对应
     text_format_cells: List[Tuple[int, int, str]] = []
     changed_cols = set()
     
+    target_col_idx = -1
+    if '条码' in df_processed.columns:
+         target_col_idx = df_processed.columns.get_loc('条码')
+
     for i, row in enumerate(df_processed.itertuples(index=False)):
         for j, cell_value in enumerate(row):
+            # 如果找到了'条码'列，仅处理该列；否则处理所有列
+            if target_col_idx != -1 and j != target_col_idx:
+                continue
+
             if isinstance(cell_value, str):
                 text = cell_value.strip()
                 is_processed = False
@@ -104,13 +113,17 @@ def preprocess_scan_list(df: pd.DataFrame) -> pd.DataFrame:
         comma_count = val.count(',')
 
         if comma_count == 2:
-            cabinet_no, channel_no, _ = val.split(',', 2)
+            cabinet_no, channel_no, pallet_no = val.split(',', 2)
             df_processed.loc[idx, "箱号"] = cabinet_no
             df_processed.loc[idx, "渠道号"] = channel_no
+            df_processed.loc[idx, "托盘号"] = pallet_no
         # 如果不符合格式，则将第2列的值复制到第4列，因为可能是把条码扫成了箱码
         if comma_count < 2:
+            df_processed.loc[idx, "箱号"] = val
             new_row = row.copy()
             new_row[col4] = row[col2]
+            # 标记该行为特殊扫描
+            new_row["箱号"] = '条码作为托盘贴扫描'
             extra_rows.append(new_row)
 
     if extra_rows:
@@ -256,6 +269,7 @@ def compare_tables(df_a: pd.DataFrame, df_b: pd.DataFrame) -> pd.DataFrame:
         row_base["渠道对齐"] = ""
         row_base["扫描箱号"] = ""
         row_base["扫描渠道号"] = ""
+        row_base["扫描托盘号"] = ""
         row_base['原始扫描序号'] = ''
 
         if key == "":
@@ -276,6 +290,7 @@ def compare_tables(df_a: pd.DataFrame, df_b: pd.DataFrame) -> pd.DataFrame:
             
             scan_box = match.get("箱号")
             scan_channel = match.get("渠道号")
+            scan_pallet = match.get("托盘号")
             scan_ori = match.get("条码")
             
             b_box = row.get("箱号")
@@ -289,10 +304,16 @@ def compare_tables(df_a: pd.DataFrame, df_b: pd.DataFrame) -> pd.DataFrame:
             current_row["原始扫描序号"] = scan_ori
 
             if not same_box:
-                current_row["扫描箱号"] = scan_box
+                if pd.isna(scan_box) or str(scan_box).strip() == "":
+                    current_row["扫描箱号"] = "扫描箱码格式不符"
+                else:
+                    current_row["扫描箱号"] = scan_box
             if not same_channel:
                 current_row["扫描渠道号"] = scan_channel
             
+            # 始终显示扫描的托盘号
+            current_row["扫描托盘号"] = scan_pallet
+
             new_rows.append(current_row)
 
     return pd.DataFrame(new_rows)
@@ -307,7 +328,7 @@ def export_with_colors(df: pd.DataFrame, filename: str):
     - 箱号和渠道都对齐：标绿
     """
     required_cols = ['预报单号', '托盘序号', '出库Ref', '破损/不可识别', '箱号', '渠道号', 
-                     '条码匹配', '箱号对齐', '渠道对齐', '扫描箱号', '扫描渠道号', '原始扫描序号']
+                     '条码匹配', '箱号对齐', '渠道对齐', '扫描箱号', '扫描渠道号', '扫描托盘号', '原始扫描序号']
     
     available_cols = [col for col in required_cols if col in df.columns]
     export_df = df[available_cols].copy()
@@ -494,8 +515,10 @@ def process_single_file(table_a_path, table_b_path: str, preprocessed_scan_df=No
     if preprocessed_scan_df is None:
         print(f"正在读取表A: {table_a_path}")
         scan_list = pd.read_excel(table_a_path)
-        scan_df, _, _ = process_encoded_data(scan_list)
-        preprocessed_scan_df = preprocess_scan_list(scan_df)
+        # 1. 先预处理
+        preprocessed_list = preprocess_scan_list(scan_list)
+        # 2. 再解码
+        preprocessed_scan_df, _, _ = process_encoded_data(preprocessed_list)
         print(f"表A预处理完成，共 {len(preprocessed_scan_df)} 行")
     else:
         print(f"使用已合并的扫描数据，共 {len(preprocessed_scan_df)} 行")
@@ -551,9 +574,9 @@ def load_scan_data(table_a_path: Path) -> pd.DataFrame:
             print(f"正在读取: {scan_file.name}")
             try:
                 scan_list = pd.read_excel(scan_file)
-                scan_df, _, _ = process_encoded_data(scan_list)
-                all_scan_data.append(scan_df)
-                print(f"  ✓ 成功读取 {len(scan_df)} 行")
+                # 调整顺序：先不解码，仅读取
+                all_scan_data.append(scan_list)
+                print(f"  ✓ 成功读取 {len(scan_list)} 行")
             except Exception as e:
                 failed_files.append((scan_file.name, str(e)[:200]))
                 print(f"  ✗ 读取失败: {str(e)[:100]}")
@@ -575,9 +598,13 @@ def load_scan_data(table_a_path: Path) -> pd.DataFrame:
         combined_scan = pd.concat(all_scan_data, ignore_index=True)
         print(f"合并后: {len(combined_scan)} 行")
         
-        # 预处理合并后的扫描数据
-        preprocessed_scan_df = preprocess_scan_list(combined_scan)
-        print(f"扫描数据预处理完成\n")
+        # 1. 先进行预处理（清洗、去重）
+        preprocessed_combined = preprocess_scan_list(combined_scan)
+        print(f"清洗去重后: {len(preprocessed_combined)} 行")
+        
+        # 2. 再进行解码
+        preprocessed_scan_df, _, _ = process_encoded_data(preprocessed_combined)
+        print(f"扫描数据解码完成\n")
         
     elif table_a_path.exists():
         # 单文件模式
@@ -589,8 +616,10 @@ def load_scan_data(table_a_path: Path) -> pd.DataFrame:
         print(f"正在读取表A: {table_a_path}")
         try:
             scan_list = pd.read_excel(table_a_path)
-            scan_df, _, _ = process_encoded_data(scan_list)
-            preprocessed_scan_df = preprocess_scan_list(scan_df)
+            # 1. 先预处理
+            preprocessed_list = preprocess_scan_list(scan_list)
+            # 2. 再解码
+            preprocessed_scan_df, _, _ = process_encoded_data(preprocessed_list)
             print(f"表A预处理完成，共 {len(preprocessed_scan_df)} 行")
         except Exception as e:
             print(f"读取失败: {e}")
